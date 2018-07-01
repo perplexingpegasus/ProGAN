@@ -38,7 +38,7 @@ class ProGAN:
             assert scaling_factor > 1
             self.channels = [max(4, c // scaling_factor) for c in self.channels]
 
-        self.batch_size = [16, 16, 16, 16, 16, 16, 8, 6, 3]
+        self.batch_size = [16, 16, 16, 16, 16, 16, 8, 4, 3]
         self.z_length = z_length
         self.n_examples = n_examples
         self.batch_repeats = batch_repeats if batch_repeats else 1
@@ -115,8 +115,8 @@ class ProGAN:
     def _create_network(self, layers):
 
         # Build the generator for this layer
-        def generator(z, reuse=True):
-            with tf.variable_scope('Generator', reuse=reuse):
+        def generator(z):
+            with tf.variable_scope('Generator'):
                 with tf.variable_scope('latent_vector'):
                     z = tf.expand_dims(z, 1)
                     g1 = tf.expand_dims(z, 2)
@@ -145,8 +145,8 @@ class ProGAN:
             return g
 
         # Build the discriminator for this layer
-        def discriminator(x, reuse=True):
-            with tf.variable_scope('Discriminator', reuse=reuse):
+        def discriminator(x):
+            with tf.variable_scope('Discriminator'):
                 if layers > 1:
                     with tf.variable_scope('rgb_layer_{}'.format(layers - 2)):
                         d0 = avg_pool(x)
@@ -178,8 +178,8 @@ class ProGAN:
 
         # Build the current network
         with tf.variable_scope('Network', reuse=tf.AUTO_REUSE):
-            Gz = generator(self.z_placeholder, reuse=False)
-            Dz = discriminator(Gz, reuse=False)
+            Gz = generator(self.z_placeholder)
+            Dz = discriminator(Gz)
 
             # Mix different resolutions of input images according to value of alpha
             with tf.variable_scope('reshape'):
@@ -277,13 +277,11 @@ class ProGAN:
                 real_imgs = tf.expand_dims(real_imgs, 0)
 
             # images summaries
-            fake_img_sum = tf.summary.image('fake{}x{}'.format(dim, dim),
-                                            fake_imgs, self.n_examples)
-            real_img_sum = tf.summary.image('real{}x{}'.format(dim, dim),
-                                            real_imgs, 4)
+            fake_img_sum = tf.summary.image('fake{}x{}'.format(dim, dim), fake_imgs, self.n_examples)
+            real_img_sum = tf.summary.image('real{}x{}'.format(dim, dim), real_imgs, 4)
 
         return (dim, wd, gp, wd_sum, gp_sum, g_train, d_train,
-                fake_img_sum, real_img_sum, Gz)
+                fake_img_sum, real_img_sum, Gz, discriminator)
 
     # Summary adding function
     def _add_summary(self, string, gs):
@@ -311,7 +309,7 @@ class ProGAN:
 
             # Get network operations and loss functions for current layer
             (dim, wd, gp, wd_sum, gp_sum, g_train, d_train,
-             fake_img_sum, real_img_sum, Gz) = self.networks[layer]
+             fake_img_sum, real_img_sum, Gz, discriminator) = self.networks[layer]
 
             # Get training data and latent variables to store in feed_dict
             feed_dict = {self.x_placeholder: self.feed.next_batch(self.batch_size[layer], dim),
@@ -379,6 +377,9 @@ class ProGAN:
             time_reamining = avg_time * steps_remaining
             print('est. time remaining on current layer: {}'.format(time_reamining))
 
+    def get_cur_res(self):
+        cur_layer = int(self.sess.run(self.layer))
+        return 2 ** (2 + cur_layer)
 
     # Function for generating images from a 1D or 2D array of latent vectors
     def generate(self, z):
@@ -394,14 +395,55 @@ class ProGAN:
         imgs = (imgs + 1) * 255 / 2
         imgs = np.uint8(imgs)
 
-        if len(imgs.shape) == 4:
+        if imgs.shape[0] == 1:
             imgs = np.squeeze(imgs, 0)
         return imgs
 
 
+    def transform(self, input_img, n_iter=100000):
+        with tf.variable_scope('transform'):
+            global_step = tf.Variable(0, name='transform_global_step', trainable=False)
+            transform_img = tf.Variable(input_img, name='transform_img', dtype=tf.float32)
+
+        cur_layer = int(self.sess.run(self.layer))
+        (dim, wd, gp, wd_sum, gp_sum, g_train, d_train,
+         ake_img_sum, real_img_sum, Gz, discriminator) = self.networks[cur_layer]
+
+        with tf.variable_scope('Network', reuse=tf.AUTO_REUSE):
+            with tf.variable_scope('resize'):
+                jitter = tf.random_uniform([2], -10, 10, tf.int32)
+                img = tf.manip.roll(transform_img, jitter, [1, 2])
+                img = resize(img, (dim, dim))
+            Dt = discriminator(img)
+
+        t_cost = tf.reduce_mean(-Dt)
+        tc_sum = tf.summary.scalar('transform_cost_{}x{}'.format(dim, dim), t_cost)
+        t_vars = tf.get_collection(tf.GraphKeys.GLOBAL_VARIABLES, scope='transform/transform_img')
+        t_train = tf.train.AdamOptimizer(0.0001).minimize(
+            t_cost, var_list=t_vars, global_step=global_step)
+        transform_img_sum = tf.summary.image('transform', transform_img)
+
+        self.sess.run(tf.global_variables_initializer())
+
+        for i in range(n_iter):
+            gs, t_cost_, tc_sum_str, _ = self.sess.run([global_step, t_cost, tc_sum, t_train])
+            print('Global step: {}, cost: {}\n\n'.format(gs, t_cost_))
+            if i % 20 == 0:
+                self._add_summary(tc_sum_str, gs)
+            if i % 1000 == 0:
+                img_sum_str = self.sess.run(transform_img_sum)
+                self._add_summary(img_sum_str, gs)
+
+
 if __name__ == '__main__':
+
     progan = ProGAN(
         logdir='logdir_v2',
         img_dir='img_arrays',
     )
+    # progan = ProGAN(
+    #     logdir='logdir_v3',
+    #     img_dir='img_arrays_botanical',
+    #     reset_optimizer=True
+    # )
     progan.train()

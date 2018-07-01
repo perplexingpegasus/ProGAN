@@ -1,42 +1,56 @@
+from progan_v15 import ProGAN
+
 import librosa
 import numpy as np
-from progan_v15 import ProGAN
 from moviepy.video.VideoClip import VideoClip
 from moviepy.editor import AudioFileClip
+from sklearn.preprocessing import StandardScaler
 
 
-def get_z_from_audio(audio, z_length, n_bins=84, hop_length=512, random_state=50):
+def get_z_from_audio(audio, z_length, n_bins=60, hop_length=512, random_state=50):
     np.random.seed(random_state)
     if type(audio) == str:
         audio, sr = librosa.load(audio)
 
     y = librosa.core.cqt(audio, n_bins=n_bins, hop_length=hop_length)
-    y, phase = librosa.core.magphase(y)
-    y = (y - np.mean(y)) / np.std(y)
+    mag, phase = librosa.core.magphase(y)
+    mag = mag.T
+    mag = StandardScaler().fit_transform(mag)
 
-    s0, s1 = y.shape
-    static = np.random.normal(size=[z_length - s0])
-    static = np.tile(static, (s1, 1))
-    static = static.T
+    s0, s1 = mag.shape
+    static = np.random.normal(size=[z_length - s1])
+    static = np.tile(static, (s0, 1))
 
-    z = np.concatenate((y, static), 0)
+    z = np.concatenate((mag, static), 1)
+    z = z.T
     np.random.shuffle(z)
     z = z.T
     return z
 
-def make_video(audio, filename, progan, n_bins=84, random_state=0):
+def make_video(audio, filename, progan, n_bins=60, random_state=0, imgs_per_batch=20):
     y, sr = librosa.load(audio)
     song_length = len(y) / sr
     z_audio = get_z_from_audio(y, z_length=progan.z_length, n_bins=n_bins, random_state=random_state)
     fps = z_audio.shape[0] / song_length
-    shape = progan.generate(z_audio[0]).shape
+    res = progan.get_cur_res()
+    shape = (res, res * 16 // 9, 3)
+
+    imgs = np.zeros(shape=[imgs_per_batch, *shape], dtype=np.float32)
+
     def make_frame(t):
+        global imgs
         cur_frame_idx = int(t * fps)
-        if cur_frame_idx < len(z_audio):
-            img = progan.generate(z_audio[cur_frame_idx])
-        else:
-            img = np.zeros(shape=shape, dtype=np.uint8)
-        return img
+
+        if cur_frame_idx >= len(z_audio):
+            return np.zeros(shape=shape, dtype=np.uint8)
+
+        if cur_frame_idx % imgs_per_batch == 0:
+            imgs = progan.generate(z_audio[cur_frame_idx:cur_frame_idx + imgs_per_batch])
+            imgs = imgs[:, :, :res * 8 // 9, :]
+            imgs_rev = np.flip(imgs, 2)
+            imgs = np.concatenate((imgs, imgs_rev), 2)
+
+        return imgs[cur_frame_idx % imgs_per_batch]
 
     video_clip = VideoClip(make_frame=make_frame, duration=song_length)
     audio_clip = AudioFileClip(audio)
@@ -48,5 +62,4 @@ if __name__ == '__main__':
         logdir='logdir_v2',
         img_dir='img_arrays',
     )
-    for i in range(10):
-        make_video('videos\\natural.mp3', 'natural{}.mp4'.format(i), progan, random_state=i)
+    make_video('videos\\wet_ya_head.mp3', 'wet_ya_head3.mp4', progan, random_state=46)
