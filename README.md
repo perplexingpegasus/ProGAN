@@ -1,6 +1,8 @@
 # ProGAN
 
 Implementation of Progressive Generative Adversarial Network based on research done by Tero Karras
+
+
 The model was trained on landscape images collected from Reddit.
 
 http://research.nvidia.com/sites/default/files/pubs/2017-10_Progressive-Growing-of/karras2018iclr-paper.pdf
