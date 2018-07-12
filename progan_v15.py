@@ -15,7 +15,7 @@ from feed_dict import FeedDict
 class ProGAN:
     def __init__(self,
             logdir,                    # directory of stored models
-            img_dir,                   # directory of images for FeedDict
+            imgdir,                   # directory of images for FeedDict
             learning_rate=0.001,       # Adam optimizer learning rate
             beta1=0,                   # Adam optimizer beta1
             beta2=0.99,                # Adam optimizer beta2
@@ -87,7 +87,7 @@ class ProGAN:
             self.d_optimizer = tf.train.AdamOptimizer(learning_rate, beta1, beta2)
 
         # Initialize FeedDict
-        self.feed = FeedDict(directory=img_dir)
+        self.feed = FeedDict.load(imgdir, logdir)
         self.n_layers = int(np.log2(1024)) - 1
         self.networks = [self._create_network(i + 1) for i in range(self.n_layers)]
 
@@ -161,7 +161,7 @@ class ProGAN:
                             d1 = leaky_relu(conv2d(d1, self.channels[i]))
                         with tf.variable_scope('2'):
                             if i == 0:
-                                d1 = leaky_relu(conv2d(d1, self.channels[0], 4, padding='VALID'))
+                                d1 = leaky_relu(conv2d(d1, self.channels[i], 4, padding='VALID'))
                             else:
                                 d1 = leaky_relu(conv2d(d1, self.channels[i]))
                         if i != 0:
@@ -354,6 +354,7 @@ class ProGAN:
                 # Save the model and generate image previews
                 else:
                     print('saving and making images...\n')
+                    self.feed.save()
                     self.saver.save(
                         self.sess, os.path.join(self.logdir, "model.ckpt"),
                         global_step=self.global_step)
@@ -439,11 +440,11 @@ if __name__ == '__main__':
 
     progan = ProGAN(
         logdir='logdir_v2',
-        img_dir='img_arrays',
+        imgdir='img_arrays',
     )
     # progan = ProGAN(
     #     logdir='logdir_v3',
-    #     img_dir='img_arrays_botanical',
+    #     imgdir='img_arrays_botanical',
     #     reset_optimizer=True
     # )
     progan.train()

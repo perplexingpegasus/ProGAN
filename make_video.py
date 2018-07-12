@@ -62,4 +62,4 @@ if __name__ == '__main__':
         logdir='logdir_v2',
         img_dir='img_arrays',
     )
-    make_video('videos\\wet_ya_head.mp3', 'wet_ya_head2.mp4', progan, random_state=45)
+    make_video('videos\\eco_zones.mp3', 'eco_zones.mp4', progan, random_state=768)

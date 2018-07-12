@@ -1,4 +1,5 @@
 import os
+import pickle
 import numpy as np
 from itertools import cycle
 
@@ -11,16 +12,19 @@ loaded at a time.
 '''
 
 class FeedDict:
-    def __init__(self, directory, shuffle=True):
-        files = os.listdir(directory)
+
+    pickle_filename = 'fd_log.plk'
+
+    def __init__(self, imgdir, logdir, shuffle=True):
+        self.logdir = logdir
+        files = os.listdir(imgdir)
         self.arrays = dict()
         for s in [2 ** i for i in range(2, 11)]:
             path_list = []
             for f in files:
                 if f.startswith('{}_'.format(s)):
-                    path_list.append(os.path.join(directory, f))
+                    path_list.append(os.path.join(imgdir, f))
             self.arrays.update({s: cycle(path_list)})
-            print(path_list)
         self.cur_res = None
         self.cur_path = None
         self.cur_array = None
@@ -28,13 +32,14 @@ class FeedDict:
         self.idx = 0
         self.shuffle = shuffle
 
-    def _change_res(self, res):
+    def __change_res(self, res):
         assert res in self.arrays.keys()
         self.cur_res = res
-        self._change_array()
+        self.__change_array()
 
-    def _change_array(self):
+    def __change_array(self):
         new_path = next(self.arrays[self.cur_res])
+        print('Loaded new memmap array: {}'.format(new_path))
         if new_path != self.cur_path:
             self.cur_path = new_path
             self.cur_array = np.load(new_path)
@@ -42,14 +47,41 @@ class FeedDict:
         if self.shuffle: np.random.shuffle(self.cur_array)
         self.idx = 0
 
-    def next_batch(self, size, res):
+    def next_batch(self, batch_size, res):
         if res != self.cur_res:
-            self._change_res(res)
-        batch = np.zeros(shape=[size, self.cur_res, self.cur_res, 3], dtype=np.float32)
-        for i in range(size):
-            batch[i] = self.cur_array[self.idx]
-            if self.idx < self.cur_array_len - 1:
-                self.idx += 1
-            else:
-                self._change_array()
+            self.__change_res(res)
+
+        remaining = self.cur_array_len - self.idx
+        start = self.idx
+
+        if remaining >= batch_size:
+            stop = start + batch_size
+            batch = self.cur_array[start:stop]
+
+        else:
+            stop = batch_size - remaining
+            batch = self.cur_array[start:]
+            self.__change_array()
+            batch = np.concatenate((batch, self.cur_array[:stop]))
+
+        print(start)
+        print(stop)
+        print(remaining)
+
+        self.idx = stop
         return batch
+
+    @classmethod
+    def load(cls, imgdir, logdir):
+        path = os.path.join(logdir, cls.pickle_filename)
+        if os.path.exists(path):
+            with open(path, 'rb') as f:
+                fd = pickle.load(f)
+            if type(fd) == cls:
+                return fd
+        return cls(imgdir, logdir)
+
+    def save(self):
+        path = os.path.join(self.logdir, self.pickle_filename)
+        with open(path, 'wb') as f:
+            pickle.dump(self, f, pickle.HIGHEST_PROTOCOL)
