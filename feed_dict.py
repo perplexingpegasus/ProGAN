@@ -15,22 +15,36 @@ class FeedDict:
 
     pickle_filename = 'fd_log.plk'
 
-    def __init__(self, imgdir, logdir, shuffle=True):
+    def __init__(self, imgdir, logdir, shuffle=True, min_size=4, max_size=1024):
+
         self.logdir = logdir
+        self.shuffle = shuffle
+        self.sizes = [2 ** i for i in range(
+            int(np.log2(min_size)),
+            int(np.log2(max_size)) + 1
+        )]
+
         files = os.listdir(imgdir)
         self.arrays = dict()
+
         for s in [2 ** i for i in range(2, 11)]:
             path_list = []
             for f in files:
+
                 if f.startswith('{}_'.format(s)):
                     path_list.append(os.path.join(imgdir, f))
+
+            if shuffle: np.random.shuffle(path_list)
             self.arrays.update({s: cycle(path_list)})
+
         self.cur_res = None
         self.cur_path = None
         self.cur_array = None
         self.cur_array_len = 0
         self.idx = 0
-        self.shuffle = shuffle
+
+    @property
+    def n_sizes(self): return len(self.sizes)
 
     def __change_res(self, res):
         assert res in self.arrays.keys()
@@ -64,11 +78,8 @@ class FeedDict:
             self.__change_array()
             batch = np.concatenate((batch, self.cur_array[:stop]))
 
-        print(start)
-        print(stop)
-        print(remaining)
-
         self.idx = stop
+
         return batch
 
     @classmethod

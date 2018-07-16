@@ -16,7 +16,7 @@ if not os.path.isdir(save_dir):
 pages = 100
 img_n = 0
 browser = webdriver.Firefox()
-browser.get('https://www.reddit.com/r/{}'.format(subreddit))
+browser.get('https://old.reddit.com/r/{}'.format(subreddit))
 
 for i in range(pages):
     icons = WebDriverWait(browser, 300).until(
