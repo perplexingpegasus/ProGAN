@@ -1,5 +1,4 @@
 import tensorflow as tf
-import numpy as np
 
 
 weight_init = tf.random_normal_initializer()
@@ -7,7 +6,6 @@ bias_init = tf.constant_initializer(0)
 
 
 def conv(input, out_channels, filter_size=3, k=1, padding='SAME', mode=None, output_shape=None):
-    if tf.rank(input) == 3: input = tf.expand_dims(input, [3])
 
     in_shape = tf.shape(input)
     input_channels = int(input.get_shape()[1])
@@ -18,8 +16,8 @@ def conv(input, out_channels, filter_size=3, k=1, padding='SAME', mode=None, out
         filter_shape = [filter_size, filter_size, input_channels, out_channels]
 
     filter = tf.get_variable('filter', filter_shape, initializer=weight_init)
-    fan_in = filter_size ** 2 * input_channels
-    filter = filter * tf.sqrt(2 / fan_in)
+    fan_in = float(filter_size ** 2 * input_channels)
+    filter = filter * tf.sqrt(2.0 / fan_in)
 
     b = tf.get_variable('bias', [1, out_channels, 1, 1], initializer=bias_init)
 
@@ -54,7 +52,7 @@ def conv(input, out_channels, filter_size=3, k=1, padding='SAME', mode=None, out
 def dense(input, output_size):
     fan_in = int(input.get_shape()[1])
     W = tf.get_variable('W', [fan_in, output_size], initializer=weight_init)
-    W = W * tf.sqrt(2 / fan_in)
+    W = W * tf.sqrt(2.0 / float(fan_in))
     b = tf.get_variable('b', [1, output_size, 1, 1], initializer=bias_init)
     return tf.matmul(input, W) + b
 
@@ -68,19 +66,12 @@ def pixelwise_norm(input):
     return input / tf.sqrt(pixel_var + 1e-8)
 
 
-def conv_layer(input, out_channels, **kwargs):
+def g_conv_layer(input, out_channels, **kwargs):
     return pixelwise_norm(leaky_relu(conv(input, out_channels, **kwargs)))
 
 
-def decrese_res(input, k=2, data_format='NCHW'):
-    filter = [1, 1, k, k]
-    pool =  tf.nn.avg_pool(
-        input, ksize=filter, strides=filter, padding='SAME', data_format=data_format
-    )
-    shape = tf.shape(pool)
-    output = tf.reshape(pool, [-1, shape[1], shape[2], 1, shape[3], 1])
-    output = tf.tile(output, [1, 1, 1, k, 1, k])
-    return tf.reshape(output, [-1, shape[1], shape[2] * k, shape[3] * k])
+def d_conv_layer(input, out_channels, **kwargs):
+    return leaky_relu(conv(input, out_channels, **kwargs))
 
 
 def minibatch_stddev(input):
@@ -90,6 +81,19 @@ def minibatch_stddev(input):
     sigma_avg = tf.reduce_mean(sigma, keepdims=True)
     layer = tf.tile(sigma_avg, [shape[0], shape[1], shape[2], 1])
     return tf.concat((input, layer), 3)
+
+
+def upscale(input):
+    shape = tf.shape(input)
+    channels = input.get_shape()[1]
+    output = tf.reshape(input, [-1, channels, shape[2], 1, shape[3], 1])
+    output = tf.tile(output, [1, 1, 1, 2, 1, 2])
+    return tf.reshape(output, [-1, channels, shape[2] * 2, shape[3] * 2])
+
+
+def downscale(input):
+    return tf.nn.avg_pool(input, ksize=[1, 1, 2, 2], strides=[1, 1, 2, 2],
+        padding='SAME', data_format='NCHW')
 
 
 def resize_images(input, dims=None):

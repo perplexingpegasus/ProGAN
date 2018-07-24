@@ -13,7 +13,7 @@ loaded at a time.
 
 class FeedDict:
 
-    pickle_filename = 'fd_log.plk'
+    pickle_filename = 'fd_log.pkl'
 
     def __init__(self, imgdir, logdir, shuffle=True, min_size=4, max_size=1024):
 
@@ -79,7 +79,6 @@ class FeedDict:
             batch = np.concatenate((batch, self.cur_array[:stop]))
 
         self.idx = stop
-
         return batch
 
     @classmethod
@@ -89,6 +88,7 @@ class FeedDict:
             with open(path, 'rb') as f:
                 fd = pickle.load(f)
             if type(fd) == cls:
+                print('Restored feed_dict -------\n')
                 return fd
         return cls(imgdir, logdir)
 

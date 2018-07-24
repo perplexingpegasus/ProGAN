@@ -1,6 +1,7 @@
 import datetime as dt
 import os
-import sys
+
+import numpy as np
 
 # Operations used in building the network. Many are not used in the current model
 from ops import *
@@ -9,14 +10,12 @@ from feed_dict import FeedDict
 
 
 # TODO: add argparser and flags
-# TODO: refactor training function
-# TODO: train next version of model using reset_optimizer=True
 
 
 class ProGAN:
     def __init__(self,
             logdir,                    # directory of stored models
-            imgdir,                   # directory of images for FeedDict
+            imgdir,                    # directory of images for FeedDict
             learning_rate=0.001,       # Adam optimizer learning rate
             beta1=0,                   # Adam optimizer beta1
             beta2=0.99,                # Adam optimizer beta2
@@ -27,13 +26,12 @@ class ProGAN:
             n_imgs=800000,             # number of images to show in each growth step
             batch_repeats=1,           # number of times to repeat minibatch
             n_examples=24,             # number of example images to generate
-            lipschitz_penalty=True,   # if True, use WGAN-LP instead of WGAN-GP
+            lipschitz_penalty=True,    # if True, use WGAN-LP instead of WGAN-GP
             big_image=True,            # Generate a single large preview image, only works if n_examples = 24
             scaling_factor=None,       # factor to scale down number of trainable parameters
-            reset_optimizer=False,     # reset optimizer variables with each new layer
-            use_uint8=False,
+            reset_optimizer=True,      # reset optimizer variables with each new layer
             batch_sizes=None,
-            channels=None
+            channels=None,
     ):
 
         # Scale down the number of factors if scaling_factor is provided
@@ -41,8 +39,8 @@ class ProGAN:
         if scaling_factor:
             assert scaling_factor > 1
             self.channels = [max(4, c // scaling_factor) for c in self.channels]
-
         self.batch_sizes = batch_sizes if batch_sizes else [16, 16, 16, 16, 16, 16, 8, 4, 3]
+
         self.z_length = z_length
         self.n_examples = n_examples
         self.batch_repeats = batch_repeats if batch_repeats else 1
@@ -54,30 +52,31 @@ class ProGAN:
         self.epsilon = epsilon
         self.reset_optimizer=reset_optimizer
         self.lipschitz_penalty = lipschitz_penalty
-        self.start = True
 
         # Generate fized latent variables for image previews
         np.random.seed(0)
         self.z_fixed = np.random.normal(size=[self.n_examples, self.z_length])
 
         # Initialize placeholders
-        dtype = tf.uint8 if use_uint8 else tf.float32
-        self.x_placeholder = tf.placeholder(dtype, [None, 3, None, None])
-        if use_uint8:
-            with tf.variable_scope('scale_images'):
-                self.x_placeholder = scale_uint8(self.x_placeholder)
+        self.x_placeholder = tf.placeholder(tf.uint8, [None, 3, None, None])
         self.z_placeholder = tf.placeholder(tf.float32, [None, self.z_length])
 
         # Global step
         with tf.variable_scope('global_step'):
-            self.global_step = tf.Variable(0, name='global_step', trainable=False)
+            self.global_step = tf.Variable(0, name='global_step', trainable=False, dtype=tf.int32)
 
         # Non-trainable variables for counting to next layer and incrementing value of alpha
         with tf.variable_scope('image_count'):
-            self.total_imgs = tf.Variable(0, name='image_step', trainable=False, dtype=tf.int32)
-            self.img_step = tf.mod(tf.add(self.total_imgs, self.n_imgs), self.n_imgs * 2)
-            self.alpha = tf.minimum(1.0, tf.div(tf.to_float(self.img_step), self.n_imgs))
-            self.layer = tf.to_int32(tf.add(self.total_imgs, self.n_imgs) / (self.n_imgs * 2))
+            self.total_imgs = tf.Variable(0, name='total_images', trainable=False, dtype=tf.int32)
+
+            img_offset = tf.add(self.total_imgs, self.n_imgs)
+            imgs_per_layer = self.n_imgs * 2
+
+            self.img_step = tf.mod(img_offset, imgs_per_layer)
+            self.layer = tf.floor_div(img_offset, imgs_per_layer)
+
+            fade_in = tf.to_float(self.img_step) / float(self.n_imgs)
+            self.alpha = tf.minimum(1.0, tf.maximum(0.0, fade_in))
 
         # Initialize optimizer as member variable if not rest_optimizer, otherwise generate new
         # optimizer for each layer
@@ -90,7 +89,7 @@ class ProGAN:
             self.d_optimizer = tf.train.AdamOptimizer(learning_rate, beta1, beta2)
 
         # Initialize FeedDict
-        self.feed = FeedDict(imgdir, logdir)
+        self.feed = FeedDict.load(imgdir, logdir)
         self.n_layers = self.feed.n_sizes
         self.networks = [self._create_network(i + 1) for i in range(self.n_layers)]
 
@@ -103,7 +102,7 @@ class ProGAN:
         # Look in logdir to see if a saved model already exists. If so, load it
         try:
             self.saver.restore(self.sess, tf.train.latest_checkpoint(self.logdir))
-            print('Restored ----------------\n')
+            print('Restored model -----------\n')
         except Exception:
             pass
 
@@ -117,7 +116,7 @@ class ProGAN:
 
 
     # Function for creating network layout at each layer
-    def _create_network(self, layers):
+    def _create_network(self, n_layers):
 
         # Build the generator for this layer
         def generator(z):
@@ -127,32 +126,30 @@ class ProGAN:
                     z = tf.expand_dims(z, 2)
                     g1 = tf.expand_dims(z, 3)
 
-                for i in range(layers):
+                for i in range(n_layers):
                     with tf.variable_scope('layer_{}'.format(i)):
 
-                        if i == layers - 1:
+                        if i == n_layers - 1:
                             g0 = g1
 
                         with tf.variable_scope('1'):
                             if i == 0:
-                                g1 = conv_layer(g1, self.channels[i],
+                                g1 = g_conv_layer(g1, self.channels[i],
                                     filter_size=4, padding='VALID', mode='transpose',
                                     output_shape=[tf.shape(g1)[0], self.channels[i], 4, 4])
                             else:
-                                g1 = conv_layer(g1, self.channels[i])
+                                g1 = g_conv_layer(g1, self.channels[i], mode='upscale')
 
                         with tf.variable_scope('2'):
-                            if i == layers - 1:
-                                g1 = conv_layer(g1, self.channels[i])
-                            else:
-                                g1 = conv_layer(g1, self.channels[i], mode='upscale')
+                            g1 = g_conv_layer(g1, self.channels[i])
 
-                with tf.variable_scope('rgb_layer_{}'.format(layers - 1)):
+                with tf.variable_scope('rgb_layer_{}'.format(n_layers - 1)):
                     g1 = conv(g1, 3, filter_size=1)
 
-                if layers > 1:
-                    with tf.variable_scope('rgb_layer_{}'.format(layers - 2)):
+                if n_layers > 1:
+                    with tf.variable_scope('rgb_layer_{}'.format(n_layers - 2)):
                         g0 = conv(g0, 3, filter_size=1)
+                        g0 = upscale(g0)
                         g = self._reparameterize(g0, g1)
                 else:
                     g = g1
@@ -163,31 +160,31 @@ class ProGAN:
         def discriminator(x):
             with tf.variable_scope('Discriminator'):
 
-                if layers > 1:
-                    with tf.variable_scope('rgb_layer_{}'.format(layers - 2)):
-                        d0 = conv_layer(x, self.channels[layers - 1],
-                            filter_size=1, mode='downscale')
+                if n_layers > 1:
+                    with tf.variable_scope('rgb_layer_{}'.format(n_layers - 2)):
+                        d0 = downscale(x)
+                        d0 = d_conv_layer(d0, self.channels[n_layers - 1], filter_size=1)
 
-                with tf.variable_scope('rgb_layer_{}'.format(layers - 1)):
-                    d1 = conv_layer(x, self.channels[layers], filter_size=1)
+                with tf.variable_scope('rgb_layer_{}'.format(n_layers - 1)):
+                    d1 = d_conv_layer(x, self.channels[n_layers], filter_size=1)
 
-                for i in reversed(range(layers)):
+                for i in reversed(range(n_layers)):
                     with tf.variable_scope('layer_{}'.format(i)):
 
                         if i == 0:
                             d1 = minibatch_stddev(d1)
 
                         with tf.variable_scope('1'):
-                            d1 = conv_layer(d1, self.channels[i])
+                            d1 = d_conv_layer(d1, self.channels[i])
 
                         with tf.variable_scope('2'):
                             if i == 0:
-                                d1 = conv_layer(d1, self.channels[0],
+                                d1 = d_conv_layer(d1, self.channels[0],
                                     filter_size=4, padding='VALID')
                             else:
-                                d1 = conv_layer(d1, self.channels[i], mode='downscale')
+                                d1 = d_conv_layer(d1, self.channels[i], mode='downscale')
 
-                        if i == layers - 1 and layers > 1:
+                        if i == n_layers - 1 and n_layers > 1:
                             d1 = self._reparameterize(d0, d1)
 
                 with tf.variable_scope('dense'):
@@ -197,7 +194,7 @@ class ProGAN:
             return d
 
         # image dimensions
-        dim = 2 ** (layers + 1)
+        dim = 2 ** (n_layers + 1)
 
         # Build the current network
         with tf.variable_scope('Network', reuse=tf.AUTO_REUSE):
@@ -207,15 +204,15 @@ class ProGAN:
             # Mix different resolutions of input images according to value of alpha
             with tf.variable_scope('training_images'):
                 x = scale_uint8(self.x_placeholder)
-                if layers > 1:
-                    x0 = decrese_res(x)
+                if n_layers > 1:
+                    x0 = upscale(downscale(x))
                     x1 = x
                     x = self._reparameterize(x0, x1)
 
             Dx = discriminator(x)
 
             # Fake and real image mixing for WGAN-GP loss function
-            interp = tf.random_uniform(shape=[tf.shape(Dz)[0], 1, 1, 1], minval=0., maxval=1.)
+            interp = tf.random_uniform(shape=[tf.shape(Dz)[0], 1, 1, 1], minval=0.0, maxval=1.0)
             x_hat = interp * x + (1 - interp) * Gz
             Dx_hat = discriminator(x_hat)
 
@@ -228,10 +225,12 @@ class ProGAN:
             # Gradient/Lipschitz Penalty
             grads = tf.gradients(Dx_hat, [x_hat])[0]
             slopes = tf.sqrt(tf.reduce_sum(tf.square(grads), [1, 2, 3]))
+
             if self.lipschitz_penalty:
                 gp = tf.square(tf.maximum((slopes - self.w_gamma) / self.w_gamma, 0))
             else:
                 gp = tf.square((slopes - self.w_gamma) / self.w_gamma)
+
             gp_scaled = self.w_lambda * gp
 
             # Epsilon penalty keeps discriminator output for drifting too far away from zero
@@ -244,13 +243,18 @@ class ProGAN:
             gp = tf.reduce_mean(gp)
 
             # Summaries
-            wd_sum = tf.summary.scalar('Wasserstein_distance_{}x{}'.format(dim, dim), wd)
-            gp_sum = tf.summary.scalar('gradient_penalty_{}x{}'.format(dim, dim), gp)
+            wd_sum = tf.summary.scalar('Wasserstein_distance_{}_({}x{})'.format(
+                n_layers - 1, dim, dim), wd)
+            gp_sum = tf.summary.scalar('gradient_penalty_{}_({}x{})'.format(
+                n_layers - 1, dim, dim), gp)
 
         # Collecting variables to be trained by optimizers
         g_vars, d_vars = [], []
-        var_scopes = ['layer_{}'.format(i) for i in range(layers)]
-        var_scopes.extend(['dense', 'rgb_layer_{}'.format(layers - 1), 'rgb_layer_{}'.format(layers - 2)])
+        var_scopes = ['layer_{}'.format(i) for i in range(n_layers)]
+        var_scopes.extend(['dense',
+             'rgb_layer_{}'.format(n_layers - 2),
+             'rgb_layer_{}'.format(n_layers - 1)])
+
         for scope in var_scopes:
             g_vars.extend(tf.get_collection(
                 tf.GraphKeys.GLOBAL_VARIABLES,
@@ -264,15 +268,18 @@ class ProGAN:
         with tf.variable_scope('Optimize'):
             if self.reset_optimizer:
                 g_train = tf.train.AdamOptimizer(
-                    self.lr, self.beta1, self.beta2, name='G_optimizer_{}'.format(layers - 1)).minimize(
+                    self.lr, self.beta1, self.beta2, name='G_optimizer_{}'.format(n_layers - 1)
+                ).minimize(
                     g_cost, var_list=g_vars)
                 d_train = tf.train.AdamOptimizer(
-                    self.lr, self.beta1, self.beta2, name='D_optimizer_{}'.format(layers - 1)).minimize(
+                    self.lr, self.beta1, self.beta2, name='D_optimizer_{}'.format(n_layers - 1)
+                ).minimize(
                     d_cost, var_list=d_vars, global_step=self.global_step)
 
             else:
                 g_train = self.g_optimizer.minimize(g_cost, var_list=g_vars)
-                d_train = self.d_optimizer.minimize(d_cost, var_list=d_vars, global_step=self.global_step)
+                d_train = self.d_optimizer.minimize(d_cost, var_list=d_vars,
+                    global_step=self.global_step)
 
             # Increment image count
             n_imgs = tf.shape(x)[0]
@@ -281,13 +288,16 @@ class ProGAN:
             d_train = tf.group(d_train, img_step_op)
 
         # Print variable names to before running model
+        print('\nGenerator variables for layer {} ({} x {}):'.format(n_layers - 1, dim, dim))
         print([var.name for var in g_vars])
+        print('\nDiscriminator variables for layer {} ({} x {}):'.format(n_layers - 1, dim, dim))
         print([var.name for var in d_vars])
 
         # Generate preview images
         with tf.variable_scope('image_preview'):
+            n_real_imgs = min(self.batch_sizes[n_layers - 1], 4)
             fake_imgs = tensor_to_imgs(Gz)
-            real_imgs = tensor_to_imgs(x[:min(self.batch_sizes[layers - 1], 4)])
+            real_imgs = tensor_to_imgs(x[:n_real_imgs])
 
             # Upsize images to normal visibility
             if dim < 256:
@@ -301,7 +311,7 @@ class ProGAN:
                 fake_imgs = tf.concat(fake_img_list, 0)
                 fake_imgs = tf.expand_dims(fake_imgs, 0)
 
-                real_img_list = tf.unstack(real_imgs, num=min(self.batch_sizes[layers - 1], 4))
+                real_img_list = tf.unstack(real_imgs, num=n_real_imgs)
                 real_imgs = tf.concat(real_img_list, 1)
                 real_imgs = tf.expand_dims(real_imgs, 0)
 
@@ -324,17 +334,19 @@ class ProGAN:
 
 
     # Main training function
-    def train(self):
+    def train(self, save_interval=80000):
         prev_layer = None
+        start = True
 
         total_imgs = self.sess.run(self.total_imgs)
+        save_step = (total_imgs // save_interval + 1) * save_interval
         max_imgs = (self.n_layers - 0.5) * self.n_imgs * 2
 
         while total_imgs < max_imgs:
 
             # Get current layer, global step, alpha and total number of images used so far
-            layer, gs, img_step, alpha, total_imgs = self.sess.run([
-                self.layer, self.global_step, self.img_step, self.alpha, self.total_imgs])
+            gs, layer, img_step, alpha, total_imgs = self.sess.run([
+                self.global_step, self.layer, self.img_step, self.alpha, self.total_imgs])
 
             # Reset start times if a new layer has begun training
             if layer != prev_layer:
@@ -342,7 +354,7 @@ class ProGAN:
                 batch_size = self.batch_sizes[layer]
 
                 # Global step interval to save model and generate image previews
-                save_interval = max(1000, 10000 // 2 ** layer)
+                save_interval = max(1000, 20000 // 2 ** layer)
 
                 # Get network operations and loss functions for current layer
                 (dim, wd, gp, wd_sum, gp_sum, g_train, d_train,
@@ -360,7 +372,8 @@ class ProGAN:
                 self.sess.run(d_train, feed_dict)
 
             # Get loss values and summaries
-            wd_, gp_, wd_sum_str, gp_sum_str = self.sess.run([wd, gp, wd_sum, gp_sum], feed_dict)
+            wd_value, gp_value, wd_sum_str, gp_sum_str = self.sess.run(
+                [wd, gp, wd_sum, gp_sum], feed_dict)
 
             # Print current status, loss functions, etc.
             percent_done = img_step / (2 * self.n_imgs)
@@ -371,9 +384,10 @@ class ProGAN:
                 img_step -= self.n_imgs
                 cur_layer_imgs //= 2
 
-            print('dimensions: {}x{} ---- {}% ---- images: {}/{} ---- alpha: {} ---- global step: {}'
-                  '\nWasserstein distance: {}\ngradient penalty: {}\n'.format(
-                dim, dim, np.round(percent_done * 100, 4), img_step, cur_layer_imgs, alpha, gs, wd_, gp_))
+            print('dimensions: ({} x {}) ---- {}% ---- images: {}/{} ---- alpha: {} ---- global step: {}'
+                '\nWasserstein distance: {}\ngradient penalty: {}'.format(
+                dim, dim, np.round(percent_done * 100, 4), img_step, cur_layer_imgs, alpha, gs,
+                wd_value, gp_value))
 
             # Log scalar data every 20 global steps
             if gs % 20 == 0:
@@ -381,15 +395,14 @@ class ProGAN:
                 self._add_summary(gp_sum_str, gs)
 
             # Operations to run every save interval
-            if gs % save_interval == 0:
+            if total_imgs > save_step == 0:
+                save_step += save_interval
 
-                # Do not save the model or generate images immediately after loading/preloading
-                if self.start:
-                    self.start = False
-
-                # Save the model and generate image previews
+                if start : start = False
                 else:
-                    print('saving and making images...\n')
+
+                    # Save the model and generate image previews
+                    print('\nsaving and making images...\n')
                     self.saver.save(
                         self.sess, os.path.join(self.logdir, "model.ckpt"),
                         global_step=self.global_step)
@@ -404,10 +417,12 @@ class ProGAN:
                     self._add_summary(fake_img_sum_str, gs)
                     self._add_summary(real_img_sum_str, gs)
 
+                    self.feed.save()
+
             # Calculate and print estimated time remaining
             delta_t = dt.datetime.now() - start_time
             time_remaining = delta_t * (1 / (percent_done + 1e-8) - 1)
-            print('est. time remaining on current layer: {}'.format(time_remaining))
+            print('est. time remaining on layer {}: {}\n'.format(layer, time_remaining))
 
             prev_layer = layer
 
@@ -471,5 +486,6 @@ if __name__ == '__main__':
     progan = ProGAN(
         logdir='logdir_v5',
         imgdir='memmaps',
+        n_imgs=200,
     )
     progan.train()
