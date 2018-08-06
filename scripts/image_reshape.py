@@ -56,7 +56,8 @@ def generate_square_crops(imgdir, savedir, crops_per_img=10, max_size=1024, filt
 def resize(savedir, NCHW=True, min_size=4, max_size=1024, max_mem=0.8,
            use_uint8=True, filter=Image.BICUBIC):
 
-    img_files = [os.path.join(savedir, '_temp', f) for f in os.listdir(imgdir)]
+    resized_img_dir = os.path.join(savedir, '_temp')
+    img_files = [os.path.join(resized_img_dir, f) for f in os.listdir(resized_img_dir)]
     np.random.shuffle(img_files)
     savedir = os.path.join(savedir, 'memmaps')
     if not os.path.exists(savedir): os.makedirs(savedir)
@@ -108,5 +109,5 @@ if __name__ == '__main__':
     imgdir = input('Image directory: ')
     savedir = input('Memmap directory: ')
 
-    generate_square_crops(imgdir, savedir)
+    #generate_square_crops(imgdir, savedir)
     resize(savedir)

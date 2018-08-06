@@ -15,10 +15,12 @@ class FeedDict:
 
     pickle_filename = 'fd_log.pkl'
 
-    def __init__(self, imgdir, logdir, shuffle=True, min_size=4, max_size=1024):
+    def __init__(self, logdir, imgdir, z_length, n_examples, shuffle=True, min_size=4, max_size=1024):
 
         self.logdir = logdir
         self.shuffle = shuffle
+        self.z_length = z_length
+
         self.sizes = [2 ** i for i in range(
             int(np.log2(min_size)),
             int(np.log2(max_size)) + 1
@@ -36,6 +38,8 @@ class FeedDict:
 
             if shuffle: np.random.shuffle(path_list)
             self.arrays.update({s: cycle(path_list)})
+
+        self.z_fixed = self.z_batch(n_examples, z_length)
 
         self.cur_res = None
         self.cur_path = None
@@ -61,7 +65,12 @@ class FeedDict:
         if self.shuffle: np.random.shuffle(self.cur_array)
         self.idx = 0
 
-    def next_batch(self, batch_size, res):
+    def z_batch(self, batch_size, random_state=None):
+        if random_state is not None:
+            np.random.seed(random_state)
+        return np.random.normal(0.0, 1.0, size=[batch_size, self.z_length])
+
+    def x_batch(self, batch_size, res):
         if res != self.cur_res:
             self.__change_res(res)
 
@@ -82,7 +91,7 @@ class FeedDict:
         return batch
 
     @classmethod
-    def load(cls, imgdir, logdir):
+    def load(cls, logdir, **kwargs):
         path = os.path.join(logdir, cls.pickle_filename)
         if os.path.exists(path):
             with open(path, 'rb') as f:
@@ -90,7 +99,7 @@ class FeedDict:
             if type(fd) == cls:
                 print('Restored feed_dict -------\n')
                 return fd
-        return cls(imgdir, logdir)
+        return cls(logdir, **kwargs)
 
     def save(self):
         path = os.path.join(self.logdir, self.pickle_filename)

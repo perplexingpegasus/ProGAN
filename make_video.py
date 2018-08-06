@@ -60,6 +60,6 @@ def make_video(audio, filename, progan, n_bins=60, random_state=0, imgs_per_batc
 if __name__ == '__main__':
     progan = ProGAN(
         logdir='logdir_v2',
-        img_dir='img_arrays',
+        imgdir='img_arrays',
     )
     make_video('videos\\eco_zones.mp3', 'eco_zones.mp4', progan, random_state=768)

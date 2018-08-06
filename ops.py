@@ -76,11 +76,15 @@ def d_conv_layer(input, out_channels, **kwargs):
 
 def minibatch_stddev(input):
     shape = tf.shape(input)
-    x_ = tf.tile(tf.reduce_mean(input, 0, keepdims=True), [shape[0], 1, 1, 1])
-    sigma = tf.sqrt(tf.reduce_mean(tf.square(input - x_), 0, keepdims=True) + 1e-8)
-    sigma_avg = tf.reduce_mean(sigma, keepdims=True)
-    layer = tf.tile(sigma_avg, [shape[0], shape[1], shape[2], 1])
-    return tf.concat((input, layer), 3)
+    group_size = tf.minimum(4, shape[0])
+    x = tf.reshape(input, [group_size, -1, shape[1], shape[2], shape[3]])
+
+    mu = tf.reduce_mean(x, axis=0, keepdims=True)
+    sigma = tf.sqrt(tf.reduce_mean(tf.square(x - mu), axis=0) + 1e-8)
+
+    sigma_avg = tf.reduce_mean(sigma, axis=[1, 2, 3], keepdims=True)
+    sigma_avg = tf.tile(sigma_avg, [group_size, 1, shape[2], shape[3]])
+    return tf.concat((input, sigma_avg), axis=1)
 
 
 def upscale(input):
